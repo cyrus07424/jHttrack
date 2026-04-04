@@ -1,7 +1,8 @@
 package mains;
 
 import constants.Configurations;
-import utils.Crawler;
+import crawlers.Crawler;
+import prompters.DefaultCredentialPrompter;
 
 import java.net.URI;
 import java.util.Scanner;
@@ -31,7 +32,7 @@ public class Main {
 			URI startUri = URI.create(input);
 			Crawler crawler = new Crawler(startUri, Configurations.OUTPUT_ROOT, Configurations.MAX_DEPTH,
 					Configurations.SAME_HOST_ONLY, Configurations.USER_AGENT, Configurations.TIMEOUT_MILLIS,
-					Configurations.OVERWRITE, new Crawler.DefaultCredentialPrompter(scanner));
+					Configurations.OVERWRITE, new DefaultCredentialPrompter(scanner));
 			crawler.crawl();
 		} catch (Exception e) {
 			e.printStackTrace();
