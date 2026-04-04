@@ -1,11 +1,5 @@
 package utils;
 
-import org.jsoup.Connection;
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
-import org.jsoup.nodes.Element;
-import org.jsoup.select.Elements;
-
 import java.io.ByteArrayInputStream;
 import java.io.Console;
 import java.io.IOException;
@@ -15,9 +9,29 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.*;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Scanner;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import org.jsoup.Connection;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
+
+import constants.Configurations;
 
 /**
  * Simple crawler that mirrors a site without altering server responses.
@@ -25,6 +39,11 @@ import java.util.regex.Pattern;
  * @author cyrus
  */
 public class Crawler {
+
+	/**
+	 * Wayback Machineのスナップショットセグメント.
+	 */
+	private static final Pattern WAYBACK_SNAPSHOT_SEGMENT = Pattern.compile("^(\\d{1,14})([A-Za-z_]+)?$");
 
 	/**
 	 * Starting URI.
@@ -77,15 +96,18 @@ public class Crawler {
 	private final Set<URI> visited = new HashSet<>();
 
 	/**
-	 * コンストラクタ.
+	 * クローラを生成します。
 	 *
-	 * @param startUri
-	 * @param outputRoot
-	 * @param maxDepth
-	 * @param sameHostOnly
-	 * @param userAgent
-	 * @param timeoutMillis
-	 * @param overwrite
+	 * <p>開始URIがWayback Machine（web.archive.org）のスナップショットの場合は、取得対象URIを
+	 * RAW（id_）モードへ正規化します（埋め込みリソースの取得を安定させるため）。</p>
+	 *
+	 * @param startUri 開始URI
+	 * @param outputRoot 出力先ルートディレクトリ
+	 * @param maxDepth クロール最大深度（開始URIが0）
+	 * @param sameHostOnly 同一ホストのURIのみに限定する場合はtrue
+	 * @param userAgent HTTPリクエストのUser-Agent
+	 * @param timeoutMillis タイムアウト（ミリ秒）
+	 * @param overwrite 既存ファイルを上書きする場合はtrue
 	 */
 	public Crawler(URI startUri, Path outputRoot, int maxDepth, boolean sameHostOnly, String userAgent,
 			int timeoutMillis, boolean overwrite) {
@@ -94,16 +116,16 @@ public class Crawler {
 	}
 
 	/**
-	 * コンストラクタ.
+	 * クローラを生成します。
 	 *
-	 * @param startUri
-	 * @param outputRoot
-	 * @param maxDepth
-	 * @param sameHostOnly
-	 * @param userAgent
-	 * @param timeoutMillis
-	 * @param overwrite
-	 * @param credentialPrompter
+	 * @param startUri 開始URI
+	 * @param outputRoot 出力先ルートディレクトリ
+	 * @param maxDepth クロール最大深度（開始URIが0）
+	 * @param sameHostOnly 同一ホストのURIのみに限定する場合はtrue
+	 * @param userAgent HTTPリクエストのUser-Agent
+	 * @param timeoutMillis タイムアウト（ミリ秒）
+	 * @param overwrite 既存ファイルを上書きする場合はtrue
+	 * @param credentialPrompter BASIC認証が要求された場合に資格情報を取得するためのプロンプタ（nullの場合はデフォルト）
 	 */
 	public Crawler(URI startUri, Path outputRoot, int maxDepth, boolean sameHostOnly, String userAgent,
 			int timeoutMillis, boolean overwrite, CredentialPrompter credentialPrompter) {
@@ -118,7 +140,10 @@ public class Crawler {
 	}
 
 	/**
-	 * クロール処理.
+	 * クロールを実行します。
+	 *
+	 * <p>開始URIから幅優先で辿り、取得できたレスポンスボディをローカルへ保存します。HTMLの場合は
+	 * a/link/script/img/source/video/audio からリンク先を抽出し、深度上限までキューに追加します。</p>
 	 */
 	public void crawl() {
 		Deque<CrawlTask> queue = new ArrayDeque<>();
@@ -143,18 +168,27 @@ public class Crawler {
 	}
 
 	/**
-	 * Fetch the content of the given URI.
+	 * 指定URIのコンテンツを取得します。
 	 *
-	 * @param uri
-	 * @return
-	 * @throws IOException
+	 * <p>HTTP/HTTPSで接続し、ステータスコードが401でBASIC認証チャレンジの場合は
+	 * 最大 {@value Configurations#MAX_BASIC_AUTH_RETRIES} 回まで再試行します。</p>
+	 *
+	 * @param uri 取得対象URI
+	 * @return 取得結果（ボディ/Content-Type/文字コード/HTML解析結果）
+	 * @throws IOException 取得に失敗した場合
 	 */
-	private static final int MAX_BASIC_AUTH_RETRIES = 3;
-
 	private CrawlResult fetch(URI uri) throws IOException {
 		return fetch(uri, 0);
 	}
 
+	/**
+	 * 指定URIのコンテンツを取得します（BASIC認証の再試行回数つき）。
+	 *
+	 * @param uri 取得対象URI
+	 * @param basicAuthAttempt BASIC認証の試行回数（内部再帰用）
+	 * @return 取得結果（ボディ/Content-Type/文字コード/HTML解析結果）
+	 * @throws IOException 取得に失敗した場合
+	 */
 	private CrawlResult fetch(URI uri, int basicAuthAttempt) throws IOException {
 		Connection conn = Jsoup.connect(uri.toString())
 				.userAgent(userAgent)
@@ -171,7 +205,8 @@ public class Crawler {
 		Connection.Response response = conn.execute();
 		int status = response.statusCode();
 
-		if (status == 401 && isBasicAuthChallenge(response) && basicAuthAttempt < MAX_BASIC_AUTH_RETRIES) {
+		if (status == 401 && isBasicAuthChallenge(response)
+				&& basicAuthAttempt < Configurations.MAX_BASIC_AUTH_RETRIES) {
 			String realm = parseBasicRealm(response.header("WWW-Authenticate"));
 			String authHeader = resolveOrPromptBasicAuth(uri, realm);
 			if (authHeader == null) {
@@ -200,6 +235,19 @@ public class Crawler {
 		return new CrawlResult(body, contentType, charset, document, isHtml);
 	}
 
+	/**
+	 * Authorizationヘッダを付与して指定URIを取得します（BASIC認証用）。
+	 *
+	 * <p>401(BASIC)が返った場合は、当該スコープのキャッシュをクリアして再プロンプトし、
+	 * 規定回数まで再試行します。</p>
+	 *
+	 * @param uri 取得対象URI
+	 * @param authorizationHeader 送信するAuthorizationヘッダ値（例: "Basic ..."）
+	 * @param basicAuthAttempt BASIC認証の試行回数（内部再帰用）
+	 * @param realm 認証レルム（WWW-Authenticateのrealm）
+	 * @return 取得結果
+	 * @throws IOException 取得に失敗した場合
+	 */
 	private CrawlResult fetchWithAuthorization(URI uri, String authorizationHeader, int basicAuthAttempt, String realm)
 			throws IOException {
 		Connection.Response response = Jsoup.connect(uri.toString())
@@ -212,7 +260,8 @@ public class Crawler {
 				.execute();
 
 		int status = response.statusCode();
-		if (status == 401 && isBasicAuthChallenge(response) && basicAuthAttempt < MAX_BASIC_AUTH_RETRIES) {
+		if (status == 401 && isBasicAuthChallenge(response)
+				&& basicAuthAttempt < Configurations.MAX_BASIC_AUTH_RETRIES) {
 			// Credentials likely wrong. Clear cached credentials for this scope and ask again.
 			clearBasicAuth(uri, realm);
 			String newRealm = parseBasicRealm(response.header("WWW-Authenticate"));
@@ -242,6 +291,12 @@ public class Crawler {
 		return new CrawlResult(body, contentType, charset, document, isHtml);
 	}
 
+	/**
+	 * レスポンスがBASIC認証のチャレンジかどうかを判定します。
+	 *
+	 * @param response HTTPレスポンス
+	 * @return BASIC認証チャレンジの場合はtrue
+	 */
 	private boolean isBasicAuthChallenge(Connection.Response response) {
 		if (response == null) {
 			return false;
@@ -253,6 +308,12 @@ public class Crawler {
 		return Pattern.compile("(?i)\\bbasic\\b").matcher(header).find();
 	}
 
+	/**
+	 * WWW-AuthenticateヘッダからBASIC認証のrealm値を抽出します。
+	 *
+	 * @param wwwAuthenticateHeader WWW-Authenticateヘッダ値
+	 * @return realm（取得できない場合はnull）
+	 */
 	private String parseBasicRealm(String wwwAuthenticateHeader) {
 		if (wwwAuthenticateHeader == null) {
 			return null;
@@ -268,6 +329,12 @@ public class Crawler {
 		return null;
 	}
 
+	/**
+	 * 事前送信（preemptive）用のBASIC認証ヘッダをキャッシュから解決します。
+	 *
+	 * @param uri 対象URI
+	 * @return Authorizationヘッダ値（ない場合はnull）
+	 */
 	private String resolvePreemptiveBasicAuth(URI uri) {
 		AuthScope hostScope = AuthScope.forHost(uri, null);
 		String hostAuth = basicAuthCache.get(hostScope);
@@ -277,6 +344,16 @@ public class Crawler {
 		return null;
 	}
 
+	/**
+	 * BASIC認証ヘッダを解決します。
+	 *
+	 * <p>スコープ（host/port + realm）に紐づくキャッシュがあればそれを返し、
+	 * なければ {@link CredentialPrompter} によりユーザーへ入力を促します。</p>
+	 *
+	 * @param uri 対象URI
+	 * @param realm 認証レルム（null可）
+	 * @return Authorizationヘッダ値（キャンセル/未入力の場合はnull）
+	 */
 	private String resolveOrPromptBasicAuth(URI uri, String realm) {
 		AuthScope realmScope = AuthScope.forHost(uri, realm);
 		String realmAuth = basicAuthCache.get(realmScope);
@@ -303,17 +380,23 @@ public class Crawler {
 		return authHeader;
 	}
 
+	/**
+	 * 指定スコープのBASIC認証キャッシュをクリアします。
+	 *
+	 * @param uri 対象URI
+	 * @param realm 認証レルム（null可）
+	 */
 	private void clearBasicAuth(URI uri, String realm) {
 		basicAuthCache.remove(AuthScope.forHost(uri, realm));
 		basicAuthCache.remove(AuthScope.forHost(uri, null));
 	}
 
 	/**
-	 * Save the fetched content to the local file system.
+	 * 取得したコンテンツをローカルファイルへ保存します。
 	 *
-	 * @param uri
-	 * @param result
-	 * @throws IOException
+	 * @param uri 元のURI
+	 * @param result 取得結果
+	 * @throws IOException 保存に失敗した場合
 	 */
 	private void save(URI uri, CrawlResult result) throws IOException {
 		Path filePath = toPath(uri, result.contentType);
@@ -327,11 +410,11 @@ public class Crawler {
 	}
 
 	/**
-	 * Enqueue links found in the document for further crawling.
+	 * HTMLからリンク先を抽出し、次のクロール対象としてキューへ追加します。
 	 *
-	 * @param queue
-	 * @param result
-	 * @param nextDepth
+	 * @param queue 追加先キュー
+	 * @param result 取得結果（HTMLのDocumentを含む想定）
+	 * @param nextDepth 次に付与する深度
 	 */
 	private void enqueueLinks(Deque<CrawlTask> queue, CrawlResult result, int nextDepth) {
 		if (result.document == null) {
@@ -363,10 +446,12 @@ public class Crawler {
 	}
 
 	/**
-	 * Normalize the given URL string to a URI.
+	 * URL文字列を正規化してURIに変換します。
 	 *
-	 * @param url
-	 * @return
+	 * <p>フラグメント（#...）は保存ファイル名や訪問判定の揺れを避けるため除去します。</p>
+	 *
+	 * @param url URL文字列
+	 * @return 正規化済みURI（不正な場合はnull）
 	 */
 	private URI normalize(String url) {
 		if (url == null || url.trim().isEmpty()) {
@@ -389,10 +474,10 @@ public class Crawler {
 	}
 
 	/**
-	 * Check if the URI uses HTTP or HTTPS scheme.
+	 * URIのスキームがHTTP/HTTPSかどうかを判定します。
 	 *
-	 * @param uri
-	 * @return
+	 * @param uri 対象URI
+	 * @return HTTP/HTTPSの場合はtrue
 	 */
 	private boolean isHttp(URI uri) {
 		String scheme = uri.getScheme();
@@ -400,11 +485,11 @@ public class Crawler {
 	}
 
 	/**
-	 * Check if two URIs have the same host.
+	 * 2つのURIが同一ホストかどうかを判定します。
 	 *
-	 * @param base
-	 * @param target
-	 * @return
+	 * @param base 基準URI
+	 * @param target 判定対象URI
+	 * @return 同一ホストの場合はtrue
 	 */
 	private boolean sameHost(URI base, URI target) {
 		String baseHost = base.getHost();
@@ -415,13 +500,17 @@ public class Crawler {
 		return baseHost.equalsIgnoreCase(targetHost);
 	}
 
-	private static final Pattern WAYBACK_SNAPSHOT_SEGMENT = Pattern.compile("^(\\d{1,14})([A-Za-z_]+)?$");
-
 	/**
-	 * If the URI points to a Wayback Machine snapshot, rewrite it to RAW (id_) mode.
-	 * Example:
+	 * Wayback Machine（web.archive.org）のスナップショットURIをRAW（id_）モードに変換します。
+	 *
+	 * <p>例:</p>
+	 * <pre>
 	 * https://web.archive.org/web/20200101000000/http://example.com
 	 *   => https://web.archive.org/web/20200101000000id_/http://example.com
+	 * </pre>
+	 *
+	 * @param uri 変換対象URI
+	 * @return 変換後URI（対象外の場合は元のURI）
 	 */
 	private URI toInternetArchiveRaw(URI uri) {
 		if (uri == null) {
@@ -470,11 +559,14 @@ public class Crawler {
 	}
 
 	/**
-	 * Convert a URI to a local file system path.
+	 * URIをローカルファイルシステム上のパスへ変換します。
 	 *
-	 * @param uri
-	 * @param contentType
-	 * @return
+	 * <p>host をルート配下の第1セグメントにし、path/query を安全なファイル名へ変換します。
+	 * pathがディレクトリで終わる場合は index.* を採用します。</p>
+	 *
+	 * @param uri 対象URI
+	 * @param contentType Content-Type（拡張子推定に利用）
+	 * @return 保存先パス
 	 */
 	private Path toPath(URI uri, String contentType) {
 		String host = uri.getHost() != null ? uri.getHost() : "unknown_host";
@@ -507,11 +599,11 @@ public class Crawler {
 	}
 
 	/**
-	 * Append file extension based on content type if missing.
+	 * ファイル名に拡張子が無い場合、Content-Typeから推定して付与します。
 	 *
-	 * @param fileName
-	 * @param contentType
-	 * @return
+	 * @param fileName 元のファイル名
+	 * @param contentType Content-Type
+	 * @return 拡張子付与後のファイル名
 	 */
 	private String appendExtensionIfMissing(String fileName, String contentType) {
 		if (fileName.contains(".")) {
@@ -521,11 +613,11 @@ public class Crawler {
 	}
 
 	/**
-	 * Determine file extension from content type.
+	 * Content-Typeから拡張子を推定します。
 	 *
-	 * @param contentType
-	 * @param fallback
-	 * @return
+	 * @param contentType Content-Type
+	 * @param fallback 判別できない場合のフォールバック（null可）
+	 * @return 推定拡張子（例: ".html"）。判別できない場合はfallback（fallbackもnullなら空文字）
 	 */
 	private String extensionFrom(String contentType, String fallback) {
 		if (contentType == null) {
@@ -564,89 +656,21 @@ public class Crawler {
 	}
 
 	/**
-	 * Sanitize a string to be safe for file names.
+	 * ファイル名として安全な文字列に変換します。
 	 *
-	 * @param value
-	 * @return
+	 * @param value 元の値
+	 * @return 英数字と . _ - 以外を _ に置換した文字列
 	 */
 	private String sanitize(String value) {
 		return value.replaceAll("[^a-zA-Z0-9._-]", "_");
 	}
 
 	/**
-	 * Crawl task representation.
+	 * スキームに対応する既定ポートを返します。
+	 *
+	 * @param scheme スキーム（http/https）
+	 * @return 既定ポート（不明な場合は-1）
 	 */
-	private static class CrawlTask {
-		final URI uri;
-		final int depth;
-
-		CrawlTask(URI uri, int depth) {
-			this.uri = uri;
-			this.depth = depth;
-		}
-	}
-
-	/**
-	 * Crawl result representation.
-	 */
-	private static class CrawlResult {
-		final byte[] body;
-		final String contentType;
-		final Charset charset;
-		final Document document;
-		final boolean isHtml;
-
-		CrawlResult(byte[] body, String contentType, Charset charset, Document document, boolean isHtml) {
-			this.body = body;
-			this.contentType = contentType;
-			this.charset = charset;
-			this.document = document;
-			this.isHtml = isHtml;
-		}
-	}
-
-	private static class AuthScope {
-		final String scheme;
-		final String host;
-		final int port;
-		final String realm;
-
-		private AuthScope(String scheme, String host, int port, String realm) {
-			this.scheme = scheme != null ? scheme.toLowerCase(Locale.ENGLISH) : null;
-			this.host = host != null ? host.toLowerCase(Locale.ENGLISH) : null;
-			this.port = port;
-			this.realm = realm;
-		}
-
-		static AuthScope forHost(URI uri, String realm) {
-			String scheme = uri != null ? uri.getScheme() : null;
-			String host = uri != null ? uri.getHost() : null;
-			int port = uri != null ? uri.getPort() : -1;
-			if (port == -1) {
-				port = defaultPortForScheme(scheme);
-			}
-			return new AuthScope(scheme, host, port, realm);
-		}
-
-		@Override
-		public boolean equals(Object o) {
-			if (this == o) {
-				return true;
-			}
-			if (!(o instanceof AuthScope)) {
-				return false;
-			}
-			AuthScope that = (AuthScope) o;
-			return port == that.port && Objects.equals(scheme, that.scheme) && Objects.equals(host, that.host)
-					&& Objects.equals(realm, that.realm);
-		}
-
-		@Override
-		public int hashCode() {
-			return Objects.hash(scheme, host, port, realm);
-		}
-	}
-
 	private static int defaultPortForScheme(String scheme) {
 		if (scheme == null) {
 			return -1;
@@ -660,27 +684,228 @@ public class Crawler {
 		return -1;
 	}
 
+	/**
+	 * Crawl task representation.
+	 */
+	private static class CrawlTask {
+		final URI uri;
+		final int depth;
+
+		/**
+		 * クロール対象と深度の組。
+		 *
+		 * @param uri 対象URI
+		 * @param depth 深度
+		 */
+		CrawlTask(URI uri, int depth) {
+			this.uri = uri;
+			this.depth = depth;
+		}
+	}
+
+	/**
+	 * Crawl result representation.
+	 * 
+	 * @author cyrus
+	 */
+	private static class CrawlResult {
+
+		/**
+		 * body.
+		 */
+		final byte[] body;
+
+		/**
+		 * contentType.
+		 */
+		final String contentType;
+
+		/**
+		 * charset.
+		 */
+		final Charset charset;
+
+		/**
+		 * document.
+		 */
+		final Document document;
+
+		/**
+		 * isHtml.
+		 */
+		final boolean isHtml;
+
+		/**
+		 * 取得結果を生成します。
+		 *
+		 * @param body レスポンスボディ
+		 * @param contentType Content-Type
+		 * @param charset 文字コード（HTML解析に利用）
+		 * @param document HTMLの場合の解析済みDocument（HTML以外はnull）
+		 * @param isHtml HTMLかどうか
+		 */
+		CrawlResult(byte[] body, String contentType, Charset charset, Document document, boolean isHtml) {
+			this.body = body;
+			this.contentType = contentType;
+			this.charset = charset;
+			this.document = document;
+			this.isHtml = isHtml;
+		}
+	}
+
+	/**
+	 * Auth scope.
+	 * 
+	 * @author cyrus
+	 */
+	private static class AuthScope {
+
+		/**
+		 * scheme.
+		 */
+		final String scheme;
+
+		/**
+		 * host.
+		 */
+		final String host;
+
+		/**
+		 * port.
+		 */
+		final int port;
+
+		/**
+		 * realm.
+		 */
+		final String realm;
+
+		/**
+		 * BASIC認証のキャッシュキーとなるスコープを生成します。
+		 *
+		 * @param scheme スキーム（http/https）
+		 * @param host ホスト
+		 * @param port ポート（未指定の場合は既定ポートへ正規化済み）
+		 * @param realm realm（null可）
+		 */
+		private AuthScope(String scheme, String host, int port, String realm) {
+			this.scheme = scheme != null ? scheme.toLowerCase(Locale.ENGLISH) : null;
+			this.host = host != null ? host.toLowerCase(Locale.ENGLISH) : null;
+			this.port = port;
+			this.realm = realm;
+		}
+
+		/**
+		 * URIからホストスコープ（host/port + realm）を作成します。
+		 *
+		 * @param uri 対象URI
+		 * @param realm realm（null可）
+		 * @return 認証スコープ
+		 */
+		static AuthScope forHost(URI uri, String realm) {
+			String scheme = uri != null ? uri.getScheme() : null;
+			String host = uri != null ? uri.getHost() : null;
+			int port = uri != null ? uri.getPort() : -1;
+			if (port == -1) {
+				port = defaultPortForScheme(scheme);
+			}
+			return new AuthScope(scheme, host, port, realm);
+		}
+
+		/**
+		 * {@inheritDoc}
+		 */
+		@Override
+		public boolean equals(Object o) {
+			if (this == o) {
+				return true;
+			}
+			if (!(o instanceof AuthScope)) {
+				return false;
+			}
+			AuthScope that = (AuthScope) o;
+			return port == that.port && Objects.equals(scheme, that.scheme) && Objects.equals(host, that.host)
+					&& Objects.equals(realm, that.realm);
+		}
+
+		/**
+		 * {@inheritDoc}
+		 */
+		@Override
+		public int hashCode() {
+			return Objects.hash(scheme, host, port, realm);
+		}
+	}
+
+	/**
+	 * Basic credentials.
+	 * 
+	 * @author cyrus
+	 */
 	private static class BasicCredentials {
+
+		/**
+		 * username.
+		 */
 		final String username;
+
+		/**
+		 * password.
+		 */
 		final char[] password;
 
+		/**
+		 * BASIC認証の資格情報を生成します。
+		 *
+		 * @param username ユーザー名
+		 * @param password パスワード（null可）
+		 */
 		BasicCredentials(String username, char[] password) {
 			this.username = username;
 			this.password = password != null ? password : new char[0];
 		}
 	}
 
+	/**
+	 * BASIC認証が必要な場合に、資格情報を取得するためのコールバック。
+	 * 
+	 * @author cyrus
+	 */
 	public interface CredentialPrompter {
+		/**
+		 * BASIC認証用のユーザー名/パスワードを取得します。
+		 *
+		 * @param uri 対象URI
+		 * @param realm realm（null可）
+		 * @return 資格情報（キャンセルしたい場合はnull）
+		 */
 		BasicCredentials promptBasic(URI uri, String realm);
 	}
 
+	/**
+	 * Default credential prompter.
+	 * 
+	 * @author cyrus
+	 */
 	public static class DefaultCredentialPrompter implements CredentialPrompter {
+
+		/**
+		 * scanner.
+		 */
 		private final Scanner scanner;
 
+		/**
+		 * デフォルトの資格情報プロンプタを生成します。
+		 *
+		 * @param scanner コンソールが使えない環境でのフォールバック入力（nullの場合はSystem.in）
+		 */
 		public DefaultCredentialPrompter(Scanner scanner) {
 			this.scanner = scanner;
 		}
 
+		/**
+		 * {@inheritDoc}
+		 */
 		@Override
 		public BasicCredentials promptBasic(URI uri, String realm) {
 			String host = uri != null ? uri.getHost() : null;

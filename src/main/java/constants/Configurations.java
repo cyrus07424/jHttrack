@@ -31,6 +31,11 @@ public interface Configurations {
 	int MAX_DEPTH = 3;
 
 	/**
+	 * BASIC認証の最大リトライ回数。
+	 */
+	int MAX_BASIC_AUTH_RETRIES = 3;
+
+	/**
 	 * 同一ホストのみクロールするかどうか.
 	 */
 	boolean SAME_HOST_ONLY = true;

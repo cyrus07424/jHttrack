@@ -16,7 +16,9 @@ public class Main {
 	/**
 	 * main.
 	 *
-	 * @param args
+	 * <p>標準入力から開始URLを受け取り、指定サイトを再帰的にクロールしてローカルへ保存します。</p>
+	 *
+	 * @param args コマンドライン引数（現状は未使用）
 	 */
 	public static void main(String[] args) {
 		try (Scanner scanner = new Scanner(System.in)) {
