@@ -1,6 +1,9 @@
 package utils;
 
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -226,5 +229,48 @@ public class CrawlUtils {
 	 */
 	public static String sanitize(String value) {
 		return value.replaceAll("[^a-zA-Z0-9._-]", "_");
+	}
+
+	/**
+	 * 文字列が最大長を超える場合、末尾をSHA-1ショートハッシュ（8文字）で置き換えて切り詰めます。
+	 *
+	 * <p>最大長以下の場合はそのまま返します。超過する場合は先頭 {@code (maxLength - 9)} 文字 + {@code "_"} +
+	 * SHA-1ハッシュ上位8桁の16進文字列を返します。</p>
+	 *
+	 * @param value     切り詰め対象の文字列
+	 * @param maxLength 最大文字数（9以上である必要があります）
+	 * @return 切り詰め後の文字列
+	 */
+	public static String truncateSegment(String value, int maxLength) {
+		if (value == null || value.length() <= maxLength) {
+			return value;
+		}
+		String hash = sha1Short(value);
+		int prefixLen = maxLength - 1 - hash.length(); // 1 for "_"
+		if (prefixLen < 0) {
+			prefixLen = 0;
+		}
+		return value.substring(0, prefixLen) + "_" + hash;
+	}
+
+	/**
+	 * 文字列のSHA-1ハッシュ上位8桁の16進文字列を返します。
+	 *
+	 * @param value 入力文字列
+	 * @return 8文字の16進ハッシュ
+	 */
+	private static String sha1Short(String value) {
+		try {
+			MessageDigest md = MessageDigest.getInstance("SHA-1");
+			byte[] digest = md.digest(value.getBytes(StandardCharsets.UTF_8));
+			StringBuilder sb = new StringBuilder(8);
+			for (int i = 0; i < Math.min(4, digest.length); i++) {
+				sb.append(String.format("%02x", digest[i] & 0xff));
+			}
+			return sb.toString();
+		} catch (NoSuchAlgorithmException e) {
+			// SHA-1 is always available in standard Java
+			throw new IllegalStateException(e);
+		}
 	}
 }

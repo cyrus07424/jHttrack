@@ -433,10 +433,26 @@ public class Crawler {
 	}
 
 	/**
+	 * パスセグメント（ディレクトリ名）の最大文字数.
+	 *
+	 * <p>この長さを超えるセグメントはSHA-1ショートハッシュを末尾に付与して切り詰めます。</p>
+	 */
+	private static final int MAX_SEGMENT_LENGTH = 100;
+
+	/**
+	 * ファイル名（拡張子を除く部分）の最大文字数.
+	 *
+	 * <p>この長さを超える場合はSHA-1ショートハッシュを末尾に付与して切り詰めます。</p>
+	 */
+	private static final int MAX_FILENAME_BASE_LENGTH = 200;
+
+	/**
 	 * URIをローカルファイルシステム上のパスへ変換します。
 	 *
 	 * <p>host をルート配下の第1セグメントにし、path/query を安全なファイル名へ変換します。
-	 * pathがディレクトリで終わる場合は index.* を採用します。</p>
+	 * pathがディレクトリで終わる場合は index.* を採用します。
+	 * 各パスセグメントは {@value #MAX_SEGMENT_LENGTH} 文字以内、
+	 * ファイル名（拡張子除く）は {@value #MAX_FILENAME_BASE_LENGTH} 文字以内に切り詰めます。</p>
 	 *
 	 * @param uri 対象URI
 	 * @param contentType Content-Type（拡張子推定に利用）
@@ -452,19 +468,35 @@ public class Crawler {
 			if (segment.isEmpty()) {
 				continue;
 			}
-			safeSegments.add(CrawlUtils.sanitize(segment));
+			String safe = CrawlUtils.sanitize(segment);
+			safeSegments.add(CrawlUtils.truncateSegment(safe, MAX_SEGMENT_LENGTH));
 		}
-		String fileName;
+		String ext;
+		String fileNameBase;
 		if (path.endsWith("/")) {
-			fileName = "index" + CrawlUtils.extensionFrom(contentType, null);
+			ext = CrawlUtils.extensionFrom(contentType, null);
+			if (ext == null) {
+				ext = "";
+			}
+			fileNameBase = "index";
 		} else {
 			String last = safeSegments.isEmpty() ? "index" : safeSegments.remove(safeSegments.size() - 1);
-			fileName = CrawlUtils.appendExtensionIfMissing(last, contentType);
+			String withExt = CrawlUtils.appendExtensionIfMissing(last, contentType);
+			int dotIndex = withExt.lastIndexOf('.');
+			if (dotIndex >= 0) {
+				fileNameBase = withExt.substring(0, dotIndex);
+				ext = withExt.substring(dotIndex);
+			} else {
+				fileNameBase = withExt;
+				ext = "";
+			}
 		}
 		String query = uri.getQuery();
 		if (query != null && !query.isEmpty()) {
-			fileName = fileName + "__" + CrawlUtils.sanitize(query);
+			fileNameBase = fileNameBase + "__" + CrawlUtils.sanitize(query);
 		}
+		fileNameBase = CrawlUtils.truncateSegment(fileNameBase, MAX_FILENAME_BASE_LENGTH);
+		String fileName = fileNameBase + ext;
 		Path resolved = outputRoot.resolve(host);
 		for (String segment : safeSegments) {
 			resolved = resolved.resolve(segment);
